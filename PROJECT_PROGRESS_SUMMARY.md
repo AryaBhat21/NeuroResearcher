@@ -84,6 +84,12 @@ In our codebase ([`agent.py`](file:///d:/Neuro%20Researcher/agent.py) & [`test_l
 
 ### 1.5 Phase 3 Integrations: Service Adapter Pattern, HTTP Execution & Query Conversion
 
+#### **0. Why Europe PMC over NCBI PubMed & Other Literature APIs at this Stage?**
+* **Single REST Endpoint returning Native JSON**: Europe PMC accepts a standard `HTTP GET` request and returns a single, modern JSON payload (`format=json`). In contrast, NCBI E-utilities (PubMed direct) requires a two-step HTTP workflow (`esearch` to fetch PMIDs, followed by `efetch`/`esummary` to fetch details) and defaults to XML requiring complex parsing.
+* **100% PubMed Coverage + Open Access**: Europe PMC indexes 100% of PubMed abstracts plus PubMed Central (PMC) full-text open-access articles, preprint servers, and patents (over 40+ million scientific records).
+* **No Mandatory API Keys**: Provides fast, public REST access out of the box without requiring API key registrations or rate-limiting headers.
+* **Rich Core Metadata in One Payload**: A single query with `resultType=core` yields paper titles, authors, journals, publication years, abstracts, DOIs, PMIDs, and direct web links in one shot.
+
 #### **1. Service / Adapter Layer Pattern (`literature_service.py`)**
 * **Concept**: Decouples external API data formats from internal application schemas.
 * **Why it matters**: External APIs (like Europe PMC) return raw JSON with specific keys (`authorString`, `abstractText`, `pubYear`, `pmid`). If Europe PMC changes its schema tomorrow, **only `literature_service.py` is updated**.
