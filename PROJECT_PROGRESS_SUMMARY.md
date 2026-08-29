@@ -82,7 +82,41 @@ In our codebase ([`agent.py`](file:///d:/Neuro%20Researcher/agent.py) & [`test_l
 
 ---
 
-## Section 2: Detailed System Architecture & Mermaid Diagrams
+### 1.5 Phase 3 Integrations: Service Adapter Pattern, HTTP Execution & Query Conversion
+
+#### **1. Service / Adapter Layer Pattern (`literature_service.py`)**
+* **Concept**: Decouples external API data formats from internal application schemas.
+* **Why it matters**: External APIs (like Europe PMC) return raw JSON with specific keys (`authorString`, `abstractText`, `pubYear`, `pmid`). If Europe PMC changes its schema tomorrow, **only `literature_service.py` is updated**.
+* **Mapping**:
+  ```
+  [ Raw External API JSON ] ──► [ literature_service.py (Adapter) ] ──► [ Internal Application Schema ]
+    (authorString, pubYear)          (Transforms & Sanitizes)             (authors: list, year: int)
+  ```
+
+#### **2. HTTP Request Execution Mechanics**
+* **Who executes the HTTP request?** **Our local Python backend** (running on Uvicorn / `literature_service.py`), NOT Google's Gemini LLM.
+* **Flow**:
+  1. Gemini receives user query and returns a structured JSON `FunctionCall` object (e.g. `search_literature(query="...")`).
+  2. Our Python backend reads `FunctionCall`, calls `requests.get("https://www.ebi.ac.uk/europepmc/...")`, and parses the JSON response.
+  3. Python backend packages the result into a `FunctionResponse` object and sends it back to Gemini.
+
+#### **3. Natural-Language Query vs. Structured API Query Conversion**
+* **User's Natural-Language Query**: *"Find recent studies on eye-movement biomarkers associated with Alzheimer's disease."*
+  * Conversational, filled with prompt fluff ("Find recent studies on").
+* **LLM-Constructed API Query**: `query="eye movement biomarkers Alzheimer's disease", start_year=2021`
+  * **Who constructs it?** The LLM constructs keyword arguments dynamically when requesting the tool call.
+  * **How it is executed**: `literature_service.py` formats it into Europe PMC query syntax: `FIRST_PDATE:[2021 TO 2026]`.
+
+#### **4. Failure Mode & Defensive Parsing Resilience**
+* **Missing Data**: Missing abstracts default to `"Abstract not available."`, missing DOIs default to `"N/A"`, invalid year strings default safely to `None`.
+* **API Failures (5xx / 429 / Timeout)**: Returns structured error payloads (`{"error": "Europe PMC rate limit exceeded.", "results": []}`) so Gemini can report the issue without crashing or hallucinating fake papers.
+
+#### **5. Citations & Source Traceability Chain**
+* To maintain scientific integrity, research claims must trace back to verified primary sources:
+  $$\text{Final Claim} \longrightarrow \text{Paper Title \& Authors} \longrightarrow \text{PMID / DOI} \longrightarrow \text{Europe PMC Web URL}$$
+
+---
+
 
 This section provides visual architectural models of the entire system, data flow, and LLM interaction loops.
 
@@ -300,22 +334,6 @@ def run_agent_flow(user_message: str) -> str:
         return final_response.text
 
     return response.text
-```
-
----
-
-## Section 4: Project Directory Map
-
-```
-d:\Neuro Researcher\
-├── .env                         # API Keys & Secrets
-├── .gitignore                   # Version control rules
-├── requirements.txt             # Installed dependencies
-├── main.py                      # FastAPI Backend Server & Database Models
-├── agent.py                     # Agentic Execution Loop
-├── tools.py                     # Custom Local Tools (search_literature, get_paper)
-├── test_llm.py                  # CLI Test Harness for Gemini Tool Calling
-└── PROJECT_PROGRESS_SUMMARY.md # Complete Progress & Learning Document
 ```
 
 ---
