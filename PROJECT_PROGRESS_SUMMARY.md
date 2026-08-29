@@ -320,8 +320,36 @@ d:\Neuro Researcher\
 
 ---
 
-## Section 5: Future Roadmap & Next Phases
+## Section 4: Phase 3 Completed — Real Literature Search Integration
 
-* **Phase 3 — Real API Integrations**: Connect `tools.py` to live scientific APIs (PubMed / Semantic Scholar API).
-* **Phase 4 — Conversation Persistence**: Store multi-turn user/agent chat histories in PostgreSQL tables.
-* **Phase 5 — Research Assistant UI**: Build a modern web interface (Streamlit / React) for researchers to query biomarkers and literature.
+### Key Architecture & Implementation Milestones:
+1. **Europe PMC REST Integration**: Created [`literature_service.py`](file:///d:/Neuro%20Researcher/literature_service.py) connecting directly to Europe PMC's REST API (`https://www.ebi.ac.uk/europepmc/webservices/rest/search`).
+2. **Adapter & Service Layer Pattern**: Decoupled external JSON structures from internal schemas. Sanitizes missing keys (`doi`, `abstractText`), strips HTML tags, and handles rate limits (HTTP 429), timeouts (10s), and server errors (5xx).
+3. **Dynamic Filtering**: Added support for `query`, `start_year`, `end_year`, and `max_results` in `search_literature()` and `fetch_paper_by_id()` in `get_paper()`.
+4. **Citations & Traceability**: Preserved paper titles, authors, DOIs, PMIDs, and direct Europe PMC article links for verifiable scientific citations.
+
+---
+
+## Section 5: Project Directory Map
+
+```
+d:\Neuro Researcher\
+├── .env                         # API Keys & Secrets
+├── .gitignore                   # Version control rules
+├── requirements.txt             # Installed dependencies
+├── literature_service.py       # Europe PMC REST API Client & Adapter Layer
+├── main.py                      # FastAPI Backend Server & Database Models
+├── agent.py                     # Agentic Execution Loop
+├── tools.py                     # Registered Tools (search_literature, get_paper)
+├── test_llm.py                  # CLI Test Harness for Gemini + Tool Calling
+└── PROJECT_PROGRESS_SUMMARY.md # Complete Progress & Learning Document
+```
+
+---
+
+## Section 6: Future Roadmap & Next Phases
+
+* **Phase 3 — Real API Integrations** [COMPLETED]
+* **Phase 4 — Multi-Turn Conversation Persistence**: Store multi-turn user/agent chat histories and session states in PostgreSQL tables.
+* **Phase 5 — Research Assistant UI**: Build a modern web interface for researchers to query biomarkers and literature.
+

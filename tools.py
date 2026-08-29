@@ -3,6 +3,7 @@ from literature_service import fetch_europe_pmc_papers, fetch_paper_by_id
 
 def search_literature(
     query: str, 
+    max_results: Optional[int] = 5,
     start_year: Optional[int] = None, 
     end_year: Optional[int] = None
 ) -> Dict[str, Any]:
@@ -11,14 +12,16 @@ def search_literature(
     
     Args:
         query: Scientific search keywords (e.g. 'eye movement Alzheimer biomarkers').
+        max_results: Optional maximum number of results to return (default: 5).
         start_year: Optional start publication year filter (e.g. 2020).
         end_year: Optional end publication year filter (e.g. 2026).
         
     Returns:
         A dictionary containing a list of real scientific paper metadata records.
     """
-    print(f"[TOOL EXECUTION] Running real search_literature() on Europe PMC with query: '{query}' (years: {start_year}-{end_year})")
-    return fetch_europe_pmc_papers(query=query, max_results=5, start_year=start_year, end_year=end_year)
+    effective_max = max_results if (max_results is not None and max_results > 0) else 5
+    print(f"[TOOL EXECUTION] Running real search_literature() on Europe PMC with query: '{query}' (years: {start_year}-{end_year}, max_results: {effective_max})")
+    return fetch_europe_pmc_papers(query=query, max_results=effective_max, start_year=start_year, end_year=end_year)
 
 def get_paper(paper_id: str) -> Dict[str, Any]:
     """
