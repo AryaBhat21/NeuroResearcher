@@ -1,3 +1,7 @@
+"""
+NeuroLens FastAPI Application Backend
+Provides research query storage, health checks, and AI agent endpoints.
+"""
 from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import create_engine
