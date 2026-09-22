@@ -32,6 +32,4 @@ Thumbs.db
 *.db
 eval_results.json
 
-# Exclude progress summary from commits
-PROJECT_PROGRESS_SUMMARY.md
 
