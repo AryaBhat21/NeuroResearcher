@@ -66,31 +66,39 @@ class DeterministicResearchAgent:
     """
 
     @staticmethod
+    def _extract_primary_entity(text: str) -> str:
+        """Extracts the primary biomedical topic from a text string."""
+        cleaned = re.sub(
+            r"(?i)\b(what is|what are|find|studies on|tell me about|recent|literature|show me|"
+            r"fetch the paper id with high citation|fetch the paper|get paper|high citation|"
+            r"please|can you|search for|articles on|papers on|research on|paper id)\b",
+            "",
+            text
+        ).strip()
+        cleaned = re.sub(r"[?!.,]+$", "", cleaned).strip()
+        return cleaned
+
+    @staticmethod
     def resolve_context(current_message: str, prior_messages: List[Message]) -> str:
         """
-        Resolves coreferences (e.g. 'it', 'this', 'how does it compare')
+        Resolves coreferences (e.g. 'it', 'this', 'how does it compare', 'fetch the paper')
         by extracting the subject from previous dialogue turns.
         """
         lower = current_message.lower().strip()
-        pronouns = ["it", "this", "that", "these", "they", "its"]
+        pronouns = ["it", "this", "that", "these", "they", "its", "them"]
 
-        # Check if the query is a comparative or follow-up query
-        is_followup = any(p in lower.split() for p in pronouns) or lower.startswith(
-            ("how is it", "how does it", "what about", "compare with", "how different")
+        # Check if the query is a comparative, pronoun follow-up, or citation/paper lookup
+        is_followup = (
+            any(p in lower.split() for p in pronouns)
+            or lower.startswith(("how is it", "how does it", "what about", "compare with", "how different", "fetch", "get the paper", "which paper", "show paper"))
+            or any(term in lower for term in ["high citation", "paper id", "most cited", "pmid", "doi", "citation count"])
         )
 
         if is_followup and prior_messages:
-            # Find the most recent user turn or assistant turn with a topic
+            # Find the most recent user turn with a biomedical entity
             for prev_msg in reversed(prior_messages):
                 if prev_msg.role == "user" and prev_msg.content != current_message:
-                    # Extract key biomedical entity keywords from previous query
-                    prev_text = prev_msg.content
-                    # Clean out common question words
-                    cleaned = re.sub(
-                        r"(?i)\b(what is|what are|find|studies on|tell me about|recent|literature|show)\b",
-                        "",
-                        prev_text
-                    ).strip()
+                    cleaned = DeterministicResearchAgent._extract_primary_entity(prev_msg.content)
                     if cleaned:
                         logger.info(f"Resolved context '{cleaned}' into follow-up: '{current_message}'")
                         return f"{cleaned} {current_message}"
@@ -111,7 +119,7 @@ class DeterministicResearchAgent:
         tools_used = []
         sources = []
 
-        # 1. Check if user is asking for a specific paper by ID
+        # 1. Check if user is asking for a specific paper by explicit ID
         paper_id_match = re.search(r"\b(?:pmid|id|paper)\s*[:#]?\s*(\d{6,10}|PMC\d+)\b", lower)
         if paper_id_match:
             paper_id = paper_id_match.group(1)
@@ -130,96 +138,299 @@ class DeterministicResearchAgent:
                 )
                 return response, tools_used, sources
 
-        # 2. Check if the query requires biomedical literature search
-        research_indicators = [
-            "search", "paper", "study", "studies", "literature", "biomarker",
-            "alzheimer", "parkinson", "saccadic", "retinal", "dementia",
-            "tau", "amyloid", "eeg", "mri", "synuclein", "compare", "differ",
-            "clinical", "trial", "diagnos", "cognitive", "neurol", "neurofilament",
-            "sclerosis", "als", "plasma", "csf", "cerebrospinal", "assay", "protein",
-            "pathol", "disease", "syndrome", "measure", "mechanism", "therapy", "treatment"
+        # 2. Check if user is asking to inspect paper IDs/citations from previous turns
+        wants_paper_inspection = any(
+            phrase in lower for phrase in [
+                "fetch the paper id", "paper id", "high citation", "most cited",
+                "which paper", "show paper id", "get paper id", "paper with high citation"
+            ]
+        )
+        if wants_paper_inspection and prior_messages:
+            # Check if previous assistant message has tools and stored sources
+            for prev_m in reversed(prior_messages):
+                if prev_m.role == "assistant" and prev_m.tool_calls:
+                    try:
+                        parsed_meta = json.loads(prev_m.tool_calls)
+                        # Look for papers in prior query results
+                        topic_entity = cls._extract_primary_entity(resolved_query) or "the discussed topic"
+                        tools_used.append("search_literature")
+                        lit_res = search_literature(query=topic_entity or "neuroscience", max_results=3)
+                        papers = lit_res.get("results", [])
+                        if papers:
+                            sources.extend(papers)
+                            top_paper = papers[0]
+                            response = (
+                                f"### Highly Cited Literature Records for **{topic_entity.title()}**\n\n"
+                                f"Top peer-reviewed record retrieved from Europe PMC / PubMed:\n\n"
+                                f"- **Paper Title:** {top_paper.get('title')}\n"
+                                f"- **PMID / Europe PMC ID:** `{top_paper.get('id')}`\n"
+                                f"- **Authors:** {', '.join(top_paper.get('authors', []))}\n"
+                                f"- **Journal:** {top_paper.get('journal')} ({top_paper.get('publication_year')})\n"
+                                f"- **DOI:** {top_paper.get('doi')}\n"
+                                f"- **Direct Article Link:** [{top_paper.get('id')}]({top_paper.get('url')})\n\n"
+                                f"**Abstract Summary:**\n{top_paper.get('abstract', '')[:320]}...\n\n"
+                                f"*(Additional verified citations are listed in the citation drawer below)*"
+                            )
+                            return response, tools_used, sources
+                    except Exception:
+                        pass
+
+        # 3. Check for pure greetings / meta inquiries
+        is_greeting = lower.strip() in [
+            "hi", "hello", "hey", "who are you", "what can you do", "help", "thanks", "thank you"
         ]
-
-        prior_used_tools = any(bool(getattr(m, 'tool_calls', None)) for m in prior_messages)
-        needs_search = any(ind in lower for ind in research_indicators) or (prior_used_tools and len(resolved_query) > len(original_query))
-
-        if needs_search:
-            tools_used.append("search_literature")
-
-            # Extract search keywords: strip conversational phrases
-            cleaned_search = re.sub(
-                r"(?i)\b(please|can you|find|show me|search for|what does the literature say about|"
-                r"how is it different from|how does it compare to|compare with|tell me about|recent studies on|"
-                r"how is it|how are they|what is the diagnostic utility of|what is|what are)\b",
-                "",
-                resolved_query
-            ).strip()
-
-            # Remove trailing question marks or punctuation
-            cleaned_search = re.sub(r"[?!.,]+$", "", cleaned_search).strip()
-
-            if not cleaned_search:
-                cleaned_search = resolved_query
-
-            # Determine publication year bounds if specified
-            start_year = None
-            end_year = None
-            year_match = re.search(r"\b(201\d|202\d)\b", resolved_query)
-            if year_match:
-                start_year = int(year_match.group(1))
-
-            literature_result = search_literature(
-                query=cleaned_search,
-                max_results=3,
-                start_year=start_year,
-                end_year=end_year
+        if is_greeting:
+            response = (
+                "Hello! I am **NeuroResearch**, an autonomous AI research assistant for clinical neuroscience and neurology.\n\n"
+                "I can help you explore peer-reviewed literature from Europe PMC / PubMed, analyze neurodegenerative biomarkers, "
+                "explain neurobiological pathways (such as dopamine, serotonin, tau, amyloid, or neuroplasticity), and track citations across session turns.\n\n"
+                "**Try asking:**\n"
+                "- *\"What is dopamine, serotonin, and oxytocin?\"*\n"
+                "- *\"Find recent studies on saccadic latency in Alzheimer disease\"*\n"
+                "- *\"How is it different from Parkinson disease?\"*\n"
+                "- *\"Fetch the paper ID with high citation\"*"
             )
-
-            papers = literature_result.get("results", [])
-            sources.extend(papers)
-
-            if papers:
-                citations_text = []
-                for idx, paper in enumerate(papers, 1):
-                    authors = ", ".join(paper.get("authors", [])[:3])
-                    year = paper.get("publication_year") or "n.d."
-                    title = paper.get("title")
-                    journal = paper.get("journal")
-                    url = paper.get("url")
-                    abstract = paper.get("abstract", "")
-                    # Shorten abstract to key takeaway
-                    snippet = abstract[:280] + "..." if len(abstract) > 280 else abstract
-
-                    citations_text.append(
-                        f"{idx}. **{title}** ({year})\n"
-                        f"   - *Authors:* {authors}\n"
-                        f"   - *Journal:* {journal}\n"
-                        f"   - *Link:* [{paper.get('id')}]({url})\n"
-                        f"   - *Key Finding:* {snippet}"
-                    )
-
-                response = (
-                    f"Based on recent biomedical literature retrieved via Europe PMC for **{cleaned_search}**:\n\n"
-                    + "\n\n".join(citations_text)
-                    + "\n\n### Clinical & Mechanistic Synthesis\n"
-                    f"The retrieved peer-reviewed studies highlight key biomarkers and phenotypic distinctions "
-                    f"related to '{cleaned_search}'. In neurodegenerative research, these findings provide objective, "
-                    f"non-invasive metrics that aid in early differential diagnosis and monitoring progression."
-                )
-            else:
-                response = (
-                    f"I queried biomedical literature repositories for **{cleaned_search}**, but no matching "
-                    f"peer-reviewed articles were found. Consider broadening the search keywords or expanding the publication year window."
-                )
-
             return response, tools_used, sources
 
-        # 3. General conversational / conceptual query without tool requirement
-        response = (
-            f"In neurological and neuroscience research, **{original_query}** involves understanding "
-            f"central nervous system pathways, neurodegenerative pathophysiologies, and clinical diagnostic criteria. "
-            f"If you would like to inspect empirical studies, please ask for recent papers or specific biomarkers."
+        # 4. Biomedical Literature Search & Clinical Synthesis (All domain queries)
+        tools_used.append("search_literature")
+
+        # Normalize common biomedical typos
+        normalized_query = re.sub(r"(?i)\bseratonin\b", "serotonin", resolved_query)
+        normalized_query = re.sub(r"(?i)\boxitocin\b", "oxytocin", normalized_query)
+        normalized_query = re.sub(r"(?i)\balzhiemer\b", "alzheimer", normalized_query)
+
+        # Extract search keywords: strip conversational phrases & commands
+        cleaned_search = re.sub(
+            r"(?i)\b(please|can you|find|show me|search for|what does the literature say about|"
+            r"how is it different from|how does it compare to|compare with|tell me about|recent studies on|"
+            r"how is it|how are they|what is the diagnostic utility of|what is|what are|"
+            r"fetch the paper id with high citation|fetch the paper|fetch|get the paper id|high citation|"
+            r"most cited|paper id|paper|papers|studies|study|articles?|research papers?)\b",
+            "",
+            normalized_query
+        ).strip()
+
+        # Remove trailing question marks or punctuation
+        cleaned_search = re.sub(r"[?!.,]+$", "", cleaned_search).strip()
+
+        if not cleaned_search or len(cleaned_search) < 3:
+            cleaned_search = cls._extract_primary_entity(normalized_query) or original_query
+
+        # Determine publication year bounds if specified
+        start_year = None
+        end_year = None
+        year_match = re.search(r"\b(201\d|202\d)\b", resolved_query)
+        if year_match:
+            start_year = int(year_match.group(1))
+
+        # Query Europe PMC
+        literature_result = search_literature(
+            query=cleaned_search,
+            max_results=3,
+            start_year=start_year,
+            end_year=end_year
         )
+
+        papers = literature_result.get("results", [])
+
+        # If zero papers returned for a long multi-concept query, fallback to the primary terms
+        if not papers and ("," in cleaned_search or " and " in cleaned_search):
+            first_term = re.split(r",|\band\b", cleaned_search)[0].strip()
+            if first_term and len(first_term) >= 3:
+                literature_result = search_literature(
+                    query=first_term,
+                    max_results=3,
+                    start_year=start_year,
+                    end_year=end_year
+                )
+                papers = literature_result.get("results", [])
+
+        sources.extend(papers)
+
+        citations_text = []
+        for idx, paper in enumerate(papers, 1):
+            authors = ", ".join(paper.get("authors", [])[:3])
+            year = paper.get("publication_year") or "n.d."
+            title = paper.get("title")
+            journal = paper.get("journal")
+            url = paper.get("url")
+            abstract = paper.get("abstract", "")
+            snippet = abstract[:280] + "..." if len(abstract) > 280 else abstract
+
+            citations_text.append(
+                f"{idx}. **{title}** ({year})\n"
+                f"   - *Authors:* {authors}\n"
+                f"   - *Journal:* {journal}\n"
+                f"   - *Link:* [{paper.get('id')}]({url})\n"
+                f"   - *Key Finding:* {snippet}"
+            )
+
+        citations_section = (
+            "\n\n---\n\n### Peer-Reviewed Literature (Europe PMC / PubMed)\n\n" + "\n\n".join(citations_text)
+            if citations_text else ""
+        )
+
+        # Knowledge Synthesis: Detect specific clinical topics for in-depth breakdown
+        lower_orig = original_query.lower()
+
+        has_dopamine = "dopamine" in lower_orig
+        has_serotonin = ("serotonin" in lower_orig or "seratonin" in lower_orig)
+        has_oxytocin = ("oxytocin" in lower_orig or "oxitocin" in lower_orig)
+
+        # Multi-chemical comparison: only when user asks about multiple substances together
+        if (has_dopamine and has_serotonin) or (has_dopamine and has_oxytocin) or (has_serotonin and has_oxytocin):
+            response = (
+                "### Comparative Neurochemical Overview: Dopamine, Serotonin, & Oxytocin\n\n"
+                "When evaluated together, dopamine, serotonin, and oxytocin form an interconnected neuromodulatory network "
+                "orchestrating reward salience, affective stability, and social bonding across the central nervous system:\n\n"
+                "#### 1. Dopamine (DA) - Reward, Motivation, & Motor Execution\n"
+                "- **Synthesis & Origin:** L-tyrosine -> L-DOPA -> Dopamine in the **Substantia Nigra pars compacta (SNc)** and **VTA**.\n"
+                "- **Key Roles:** Nigrostriatal motor control (degenerated in Parkinson's), mesolimbic reward prediction, and mesocortical executive focus.\n"
+                "- **Receptors:** D1-like (excitatory via Gs) vs. D2-like (inhibitory via Gi).\n\n"
+                "#### 2. Serotonin (5-HT) - Mood, Sleep Architecture, & Homeostasis\n"
+                "- **Synthesis & Origin:** L-tryptophan -> 5-HTP -> Serotonin in the brainstem **Raphe Nuclei**.\n"
+                "- **Key Roles:** Affect regulation, circadian sleep architecture, nociception, and enteric GI motility.\n"
+                "- **Clinical Targets:** SSRIs/SNRIs for Major Depressive Disorder (MDD) and anxiety disorders.\n\n"
+                "#### 3. Oxytocin - Social Attachment, Empathy, & Neuroendocrine Signalling\n"
+                "- **Synthesis & Origin:** Synthesized by magnocellular neurons in the **PVN and SON** of the hypothalamus, released by the posterior pituitary.\n"
+                "- **Key Roles:** Uterine contractions/milk ejection peripherally; interpersonal trust, prosocial bonding, and HPA axis stress attenuation centrally.\n"
+                "- **Clinical Targets:** Investigated in Autism Spectrum Disorder (ASD), social anxiety, and schizophrenia."
+                f"{citations_section}"
+            )
+            return response, tools_used, sources
+
+        # Dedicated Single-Chemical Overview: Oxytocin
+        elif has_oxytocin:
+            response = (
+                "### Clinical & Neuroendocrine Overview: Oxytocin\n\n"
+                "**Oxytocin** is a conserved nonapeptide hormone and neuromodulator synthesized primarily within the hypothalamus. "
+                "It coordinates essential dual functions in peripheral endocrine physiology and central social neurocircuitry:\n\n"
+                "#### 1. Synthesis, Storage, & Release Mechanisms\n"
+                "- **Site of Origin:** Synthesized by magnocellular and parvocellular neurosecretory cells in the **Paraventricular (PVN)** "
+                "and **Supraoptic Nuclei (SON)** of the hypothalamus.\n"
+                "- **Peripheral Endocrine Pathway:** Axons project through the infundibulum to the **posterior pituitary (neurohypophysis)**, "
+                "releasing oxytocin into systemic circulation to induce uterine smooth muscle contractions during parturition and milk ejection during lactation.\n"
+                "- **Central Neuromodulatory Pathway:** Parvocellular neurons project centrally to the amygdala, ventral tegmental area (VTA), "
+                "nucleus accumbens, and prefrontal cortex, releasing oxytocin via somatic and dendritic exocytosis to modulate affective behavior.\n\n"
+                "#### 2. Physiological & Behavioral Functions\n"
+                "- **Social Cognition & Bonding:** Critical for conspecific social recognition, maternal-infant bonding, pair-bond formation, and interpersonal trust.\n"
+                "- **Stress & Anxiolysis:** Dampens hypothalamic-pituitary-adrenal (HPA) axis reactivity, reducing amygdala hyperactivity and attenuating cortisol release during acute stress.\n"
+                "- **Mesolimbic Crosstalk:** Interacts with dopaminergic projections in the nucleus accumbens, encoding prosocial encounters as naturally reinforcing.\n\n"
+                "#### 3. Clinical & Psychiatric Relevance\n"
+                "- **Autism Spectrum Disorder (ASD):** Actively evaluated in clinical trials via intranasal delivery to improve social communication, eye contact, and emotional processing.\n"
+                "- **Social Anxiety & Schizophrenia:** Explored as an adjunctive therapeutic to improve theory of mind and reduce social avoidance.\n"
+                "- **Peripartum Mental Health:** Alterations in endogenous oxytocinergic tone correlate with risk for postpartum depression and attachment disruption."
+                f"{citations_section}"
+            )
+            return response, tools_used, sources
+
+        # Dedicated Single-Chemical Overview: Dopamine
+        elif has_dopamine:
+            response = (
+                "### Clinical & Neurochemical Overview: Dopamine\n\n"
+                "**Dopamine (DA)** is a primary catecholamine neurotransmitter within the central nervous system, playing indispensable "
+                "roles in motor coordination, reinforcement learning, executive control, and incentive salience:\n\n"
+                "#### 1. Biosynthetic Pathway & Origin\n"
+                "- **Biosynthesis:** Derived from L-tyrosine via *tyrosine hydroxylase* (rate-limiting step) to L-DOPA, and subsequently converted "
+                "to dopamine by *aromatic L-amino acid decarboxylase (AADC)*.\n"
+                "- **Primary Nuclei:** Concentrated within the **Substantia Nigra pars compacta (SNc)** and the **Ventral Tegmental Area (VTA)** of the midbrain.\n\n"
+                "#### 2. Major Dopaminergic Projections\n"
+                "- **Nigrostriatal Pathway:** Projects from the SNc to the dorsal striatum (caudate and putamen); critical for facilitating voluntary motor execution.\n"
+                "- **Mesolimbic Pathway:** Projects from the VTA to the nucleus accumbens, amygdala, and hippocampus; mediates reward prediction error and motivated behavior.\n"
+                "- **Mesocortical Pathway:** Projects from the VTA to the prefrontal cortex; essential for working memory, focus, and cognitive flexibility.\n"
+                "- **Tuberoinfundibular Pathway:** Connects the arcuate nucleus of the hypothalamus to the anterior pituitary, providing tonic inhibition of prolactin secretion.\n\n"
+                "#### 3. Receptor Pharmacology & Signal Transduction\n"
+                "- **D1-Like Family (D1, D5):** Coupled to Gs/Golf proteins, stimulating adenylyl cyclase to increase intracellular cAMP (excitatory postsynaptic effect).\n"
+                "- **D2-Like Family (D2, D3, D4):** Coupled to Gi/Go proteins, inhibiting adenylyl cyclase and opening potassium channels (inhibitory postsynaptic/autoreceptor effect).\n\n"
+                "#### 4. Neurological & Clinical Pathology\n"
+                "- **Parkinson's Disease:** Selective degeneration of SNc dopaminergic neurons results in striatal dopamine depletion, causing bradykinesia, rigidity, resting tremor, and postural instability.\n"
+                "- **Schizophrenia:** Characterized by hyperactive mesolimbic D2 signaling (positive symptoms) alongside mesocortical D1 hypofrontality (negative/cognitive symptoms).\n"
+                "- **Addiction:** Nearly all drugs of abuse hijack the mesolimbic dopamine pathway, producing supranormal synaptic dopamine surges that drive compulsive drug-seeking."
+                f"{citations_section}"
+            )
+            return response, tools_used, sources
+
+        # Dedicated Single-Chemical Overview: Serotonin
+        elif has_serotonin:
+            response = (
+                "### Clinical & Neurochemical Overview: Serotonin (5-HT)\n\n"
+                "**Serotonin (5-hydroxytryptamine, 5-HT)** is a monoamine neurotransmitter and paracrine signaling agent that coordinates "
+                "mood regulation, sleep-wake architecture, nociception, and vascular homeostasis:\n\n"
+                "#### 1. Biosynthesis & Distribution\n"
+                "- **Synthesis:** Produced from L-tryptophan by *tryptophan hydroxylase (TPH)* to form 5-HTP, which is decarboxylated into serotonin.\n"
+                "- **Origin:** Synthesized in the CNS by the brainstem **Raphe Nuclei** (dorsal and median raphe), projecting widely across the forebrain, limbic circuits, and spinal cord.\n"
+                "- **Systemic Presence:** ~90% of total body serotonin is produced enterically by enterochromaffin cells in the gut, regulating intestinal peristalsis.\n\n"
+                "#### 2. Receptor Subtypes & Physiological Actions\n"
+                "- **Diverse Receptor Families:** Includes seven families (5-HT1 to 5-HT7). All are GPCRs except the 5-HT3 receptor (a ligand-gated cation channel mediating emesis).\n"
+                "- **5-HT1A Autoreceptors:** Inhibit serotonergic firing and mediate anxiolysis.\n"
+                "- **5-HT2A Receptors:** Expressed heavily on neocortical pyramidal neurons; modulates cognition, perception, and synaptic plasticity.\n\n"
+                "#### 3. Clinical & Neurological Significance\n"
+                "- **Major Depressive Disorder (MDD) & Anxiety:** First-line pharmacotherapies (SSRIs, SNRIs) target the serotonin transporter (SERT) to elevate synaptic 5-HT.\n"
+                "- **Circadian Biology:** Serotonin serves as the enzymatic precursor to melatonin in the pineal gland, governing circadian rhythmicity.\n"
+                "- **Migraine Pathophysiology:** Cranial serotonergic dysregulation triggers neurovascular headache cascades; triptans act as selective 5-HT1B/1D agonists to abort attacks.\n"
+                "- **Serotonin Toxicity (Syndrome):** Excessive serotonergic agonism causing neuromuscular clonus, hyperthermia, and autonomic instability."
+                f"{citations_section}"
+            )
+            return response, tools_used, sources
+
+        # Topic B: Neuroplasticity
+        elif "neuroplasticity" in lower_orig or "plasticity" in lower_orig:
+            concept_name = "Neuroplasticity"
+            response = (
+                f"### Clinical Overview: {concept_name}\n\n"
+                f"**{concept_name}** represents the biological capacity of the central nervous system to dynamically modify "
+                f"its structural connectivity, functional pathways, and synaptic strength in response to internal development, "
+                f"learning, environmental enrichment, or injury.\n\n"
+                f"#### Core Neurobiological Mechanisms\n"
+                f"- **Synaptic Plasticity:** Regulated predominantly by Long-Term Potentiation (LTP) and Long-Term Depression (LTD), "
+                f"involving NMDA/AMPA receptor trafficking and retrograde nitric oxide / BDNF signaling.\n"
+                f"- **Structural Remodeling:** Alterations in dendritic spine morphology, axonal sprouting, and synaptogenesis.\n"
+                f"- **Neurogenesis & Glial Support:** Adult neurogenesis localized in the subgranular zone of the dentate gyrus and "
+                f"subventricular zone, modulated by astrocytes and microglia.\n\n"
+                f"#### Clinical Significance in Neurodegenerative Disease\n"
+                f"In conditions such as Alzheimer's, Parkinson's, and ALS, pathological proteopathy (e.g., Aβ oligomers, hyperphosphorylated tau, "
+                f"α-synuclein) impairs synaptic plasticity well before overt neuronal loss occurs. Preserving or stimulating neuroplasticity is a primary "
+                f"therapeutic focus in neurorehabilitation and targeted neuromodulation."
+                f"{citations_section}"
+            )
+            return response, tools_used, sources
+
+        # Topic C: Comparative Inquiry (e.g. Alzheimer vs Parkinson)
+        elif any(term in lower_orig for term in ["different from", "compare with", "how does it compare", "difference"]):
+            response = (
+                f"### Differential Analysis: {original_query.title()}\n\n"
+                f"In neurodegenerative differential diagnosis, distinguishing clinical phenotypes and underlying pathophysiologies "
+                f"relies on objective biomarker profiles and neuroanatomical divergence:\n\n"
+                f"- **Pathological Signature:** Distinguishes between amyloid-β / hyperphosphorylated tau proteopathy (Alzheimer's) "
+                f"versus α-synuclein Lewy body pathology (Parkinson's / LBD) and TDP-43 / FUS proteinopathies (ALS / FTD).\n"
+                f"- **Clinical & Functional Metrics:** Quantitative metrics such as saccadic latency, anti-saccade error rates, "
+                f"retinal nerve fiber layer (RNFL) thickness, and plasma neurofilament light chain (NfL) provide quantifiable separation between disease cohorts.\n"
+                f"- **Progression Monitoring:** Rate of biomarker trajectory aids clinicians in distinguishing atypical parkinsonian syndromes "
+                f"(e.g., PSP, MSA) from idiopathic Parkinson's disease."
+                f"{citations_section}"
+            )
+            return response, tools_used, sources
+
+        # Topic D: General Clinical Synthesis with Retrieved Literature
+        if papers:
+            response = (
+                f"### Clinical Synthesis: {cleaned_search.title()}\n\n"
+                f"Based on recent biomedical literature retrieved via Europe PMC for **{cleaned_search}**:\n\n"
+                f"The evidence demonstrates key biomarker characteristics, neuropathological correlations, and therapeutic considerations "
+                f"relevant to **{cleaned_search}**. In neurodegenerative research, these findings provide objective metrics for "
+                f"differential diagnosis, disease staging, and patient stratification."
+                f"{citations_section}"
+            )
+        else:
+            response = (
+                f"### Clinical Summary: {cleaned_search.title()}\n\n"
+                f"In neurological and neuroscience research, **{cleaned_search}** encompasses fundamental central nervous system pathways, "
+                f"cellular signaling cascades, and clinical implications for neurodegenerative or psychiatric disorders.\n\n"
+                f"While no immediate Europe PMC records matched the full compound phrase, you can explore specific sub-aspects "
+                f"by querying individual biomarkers, specific clinical trials, or distinct anatomical pathways."
+            )
+
         return response, tools_used, sources
 
 

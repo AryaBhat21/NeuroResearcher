@@ -252,7 +252,14 @@ LOG_LEVEL=INFO
 
 ## 8. Running the Backend & Tests
 
-### 8.1 Start Backend Server
+### 8.1 Start Interactive Streamlit Web UI (Recommended)
+Launch the standalone web application (no separate server needed):
+```bash
+.\.venv\Scripts\streamlit.exe run app.py
+```
+This opens the NeuroResearch UI directly in your default browser at `http://localhost:8501`.
+
+### 8.2 Start Backend REST API Server (Alternative)
 ```bash
 .\.venv\Scripts\uvicorn.exe main:app --reload --port 8000
 ```
